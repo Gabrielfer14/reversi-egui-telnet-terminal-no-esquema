@@ -5,14 +5,13 @@ use tokio::sync::Mutex;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 struct GameState {
-    board: [[i32; 8]; 8],
-    current_turn: i32, // 1 para jogador 1, -1 para jogador 2
+    board: [[i32; 7]; 6],  // Tabuleiro 6x7
+    current_turn: i32, // 1 para jogador 1 (X), -1 para jogador 2 (O)
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 struct Move {
-    row: usize,
-    col: usize,
+    col: usize, // Coluna onde a peça será jogada
 }
 
 #[derive(Debug, Clone)]
@@ -24,36 +23,36 @@ struct Player {
 struct GameRoom {
     game_state: GameState,
     game_started: bool,
-    players: Vec<Player>,  // Armazena os jogadores conectados
+    players: Vec<Player>,
 }
 
 impl GameRoom {
     fn new() -> Self {
         GameRoom {
             game_state: GameState {
-                board: [[0; 8]; 8],
-                current_turn: 1, // Começa com o jogador 1 (X)
+                board: [[0; 7]; 6], 
+                current_turn: 1, 
             },
             game_started: false,
             players: Vec::new(),
         }
     }
 
-    fn start_game(&mut self) {
-        if !self.game_started {
-            self.game_started = true;
-            println!("O jogo começou!");
-        }
-    }  
-
 
     // Atualiza o estado do jogo com base na jogada
     pub fn update_game_state(&mut self, player_move: Move) -> Result<(), String> {
         if !is_valid_move(&self.game_state, &player_move) {
-            return Err("Jogada inválida. Escolha uma célula vazia dentro do tabuleiro.".to_string());
+            return Err("Jogada inválida. Escolha uma coluna vazia.".to_string());
         }
 
-        self.game_state.board[player_move.row][player_move.col] = self.game_state.current_turn;
+        // Encontra a linha disponível para a jogada
+        let mut row = 5; // Começa da última linha
+        while row > 0 && self.game_state.board[row][player_move.col] != 0 {
+            row -= 1;
+        }
+        
+        // Coloca a peça na linha e coluna corretas
+        self.game_state.board[row][player_move.col] = self.game_state.current_turn;
 
         // Alterna o turno
         self.game_state.current_turn = -self.game_state.current_turn;
@@ -61,29 +60,23 @@ impl GameRoom {
         Ok(())
     }
 
-    // Retorna o estado atual do jogo como uma string em formato bonitinho
+    // Retorna o estado atual do jogo como uma string em formato bonito
     pub fn get_game_state(&self) -> String {
         let mut chars = Vec::new();
-        for i in 1..50 
-        {
+        for i in 1..50 {
             chars.push('\n');
         }
-        for row in &self.game_state.board 
-        {
-            
-            for cell in row
-            {
-                if(*cell == 0) { chars.push('+'); }
-                else if(*cell == 1) { chars.push('■'); }
-                else if(*cell == -1) { chars.push('□'); }
+        for row in &self.game_state.board {
+            for cell in row {
+                if *cell == 0 { chars.push('+'); }
+                else if *cell == 1 { chars.push('X'); }
+                else if *cell == -1 { chars.push('O'); }
             }
             chars.push('\n');
         }
         let s = chars.into_iter().collect();
         s
     }
-
-
 }
 
 async fn handle_client(mut stream: tokio::net::TcpStream, game_room: Arc<Mutex<GameRoom>>, player_symbol: i32) {
@@ -92,7 +85,7 @@ async fn handle_client(mut stream: tokio::net::TcpStream, game_room: Arc<Mutex<G
     let mut buffer = String::new();
 
     loop {
-        ///>>> Não é seu turno. Só atualiza pra ver se tem update
+        // Não é seu turno. Só atualiza pra ver se tem update(fazer um aviso de que não é seu turno)
         let mut game_room_lock = game_room.lock().await;
         let game_state_str = game_room_lock.get_game_state();
         let _ = writer.write_all(game_state_str.as_bytes()).await;
@@ -109,34 +102,93 @@ async fn handle_client(mut stream: tokio::net::TcpStream, game_room: Arc<Mutex<G
         }
 
         let parts: Vec<&str> = buffer.trim().split_whitespace().collect();
-        if parts.len() == 2 {
-            if let (Ok(row), Ok(col)) = (parts[0].parse::<usize>(), parts[1].parse::<usize>()) {
-                let player_move = Move { row, col };
+        if parts.len() == 1 {
+            if let Ok(col) = parts[0].parse::<usize>() {
+                let player_move = Move { col };
 
                 match game_room_lock.update_game_state(player_move) {
-                    Ok(_) => { let game_state_str = game_room_lock.get_game_state();
-                        let _ = writer.write_all(game_state_str.as_bytes()).await;}
+                    Ok(_) => {
+                        let game_state_str = game_room_lock.get_game_state();
+                        let _ = writer.write_all(game_state_str.as_bytes()).await;
+                        
+                        if check_winner(&game_room_lock.game_state, player_symbol) {
+                            let msg = "Você venceu!\n";
+                            let _ = writer.write_all(msg.as_bytes()).await;
+                            break;
+                        }
+                    }
                     Err(msg) => {
                         let _ = writer.write_all(msg.as_bytes()).await;
                     }
                 }
 
             } else {
-                let msg = "Coordenadas inválidas. Use o formato: linha coluna (ex: 1 2)\n";
+                let msg = "Coluna inválida. Use o formato: número da coluna (ex: 1)\n";
                 let _ = writer.write_all(msg.as_bytes()).await;
             }
         } else {
-            let msg = "Formato de jogada inválido. Use o formato: linha coluna (ex: 1 2)\n";
+            let msg = "Formato de jogada inválido. Use o formato: número da coluna (ex: 1)\n";
             let _ = writer.write_all(msg.as_bytes()).await;
         }
     }
 }
 
-/// Verifica se uma jogada é válida
+// Verificar se uma jogada é válida
 fn is_valid_move(game_state: &GameState, player_move: &Move) -> bool {
-    player_move.row < 8
-        && player_move.col < 8
-        && game_state.board[player_move.row][player_move.col] == 0
+    player_move.col < 7 && game_state.board[0][player_move.col] == 0
+}
+
+// Função para verificar se algum jogador venceu
+fn check_winner(game_state: &GameState, player_symbol: i32) -> bool {
+    for row in 0..6 {
+        for col in 0..4 {
+            if game_state.board[row][col] == player_symbol
+                && game_state.board[row][col + 1] == player_symbol
+                && game_state.board[row][col + 2] == player_symbol
+                && game_state.board[row][col + 3] == player_symbol
+            {
+                return true;
+            }
+        }
+    }
+
+    for col in 0..7 {
+        for row in 0..3 {
+            if game_state.board[row][col] == player_symbol
+                && game_state.board[row + 1][col] == player_symbol
+                && game_state.board[row + 2][col] == player_symbol
+                && game_state.board[row + 3][col] == player_symbol
+            {
+                return true;
+            }
+        }
+    }
+
+    for row in 0..3 {
+        for col in 0..4 {
+            if game_state.board[row][col] == player_symbol
+                && game_state.board[row + 1][col + 1] == player_symbol
+                && game_state.board[row + 2][col + 2] == player_symbol
+                && game_state.board[row + 3][col + 3] == player_symbol
+            {
+                return true;
+            }
+        }
+    }
+
+    for row in 3..6 {
+        for col in 0..4 {
+            if game_state.board[row][col] == player_symbol
+                && game_state.board[row - 1][col + 1] == player_symbol
+                && game_state.board[row - 2][col + 2] == player_symbol
+                && game_state.board[row - 3][col + 3] == player_symbol
+            {
+                return true;
+            }
+        }
+    }
+
+    false
 }
 
 #[tokio::main]
