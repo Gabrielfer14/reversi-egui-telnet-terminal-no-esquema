@@ -85,22 +85,29 @@ async fn handle_client(mut stream: tokio::net::TcpStream, game_room: Arc<Mutex<G
     let mut buffer = String::new();
 
     loop {
-        // Não é seu turno. Só atualiza pra ver se tem update(fazer um aviso de que não é seu turno)
+        // Bloqueia o estado do jogo para acessar a lógica de controle de turno e estado
         let mut game_room_lock = game_room.lock().await;
         let game_state_str = game_room_lock.get_game_state();
+        
+        // Envia o estado atual do jogo
         let _ = writer.write_all(game_state_str.as_bytes()).await;
+
+        // Verifica se é o turno do jogador, caso contrário, apenas aguarda
         if game_room_lock.game_state.current_turn != player_symbol {
-            drop(game_room_lock);
-            continue;
+            drop(game_room_lock); // Libera o bloqueio, para que outros jogadores possam jogar
+            continue; // Se não é o turno, continua esperando
         }
 
+        // Jogador tem permissão para jogar
         buffer.clear();
 
+        // Lê a entrada do jogador
         if reader.read_line(&mut buffer).await.is_err() {
             println!("Erro ao ler mensagem do cliente");
             break;
         }
 
+        // Processa a entrada (jogada do jogador)
         let parts: Vec<&str> = buffer.trim().split_whitespace().collect();
         if parts.len() == 1 {
             if let Ok(col) = parts[0].parse::<usize>() {
@@ -108,9 +115,11 @@ async fn handle_client(mut stream: tokio::net::TcpStream, game_room: Arc<Mutex<G
 
                 match game_room_lock.update_game_state(player_move) {
                     Ok(_) => {
+                        // Se a jogada foi bem-sucedida, verifica se alguém venceu
                         let game_state_str = game_room_lock.get_game_state();
                         let _ = writer.write_all(game_state_str.as_bytes()).await;
-                        
+
+                        // Verifica se o jogador venceu
                         if check_winner(&game_room_lock.game_state, player_symbol) {
                             let msg = "Você venceu!\n";
                             let _ = writer.write_all(msg.as_bytes()).await;
@@ -118,20 +127,23 @@ async fn handle_client(mut stream: tokio::net::TcpStream, game_room: Arc<Mutex<G
                         }
                     }
                     Err(msg) => {
+                        // Se a jogada foi inválida, envia a mensagem de erro
                         let _ = writer.write_all(msg.as_bytes()).await;
                     }
                 }
-
             } else {
+                // Envia mensagem se a entrada for inválida
                 let msg = "Coluna inválida. Use o formato: número da coluna (ex: 1)\n";
                 let _ = writer.write_all(msg.as_bytes()).await;
             }
         } else {
+            // Envia mensagem se a jogada não tiver o formato esperado
             let msg = "Formato de jogada inválido. Use o formato: número da coluna (ex: 1)\n";
             let _ = writer.write_all(msg.as_bytes()).await;
         }
     }
 }
+
 
 // Verificar se uma jogada é válida
 fn is_valid_move(game_state: &GameState, player_move: &Move) -> bool {
